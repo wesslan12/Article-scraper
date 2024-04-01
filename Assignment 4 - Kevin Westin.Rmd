@@ -1,0 +1,603 @@
+---
+title: "Lab 4"
+author: "Kevin Westin"
+date: '2022-10-20'
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(slam)         # New: needed for perplexity calc
+library(quanteda)     # New: to process text
+library(topicmodels)  # New: to fit topic models
+library(word2vec)     # New: to fit word embeddings
+library(vtable)
+```
+
+1.  **Begin by importing fb-congress-data3.csv. Report basic information
+    about the data set; how many rows and column it has, as well as the
+    name of the variables.**
+
+```{r}
+data <- fread("fb-congress-data3.csv",encoding = 'UTF-8')
+vtable(data)
+```
+
+The dataset contains 6752 rows and 4 columns. Each row contains
+information of a facebook message, such as the the actual text of the
+post,the document id, the political party of the sender, and displayed
+screen name on facebook.
+
+2.  **As you may have noticed from your inspection in #1, this data set
+    has yet to be pre-processed (it contains punctuation, etc.). Hence,
+    that is what you shall do now. More specifically, perform the
+    following steps:**
+
+<!-- -->
+
+i.  *Use quanteda's corpus() function to create a corpus of your data
+    set. Hint: For the argument x select your data set, for the argument
+    text select the column name which stores the text, for the argument
+    docid_field select the id variable, and finally, add the names of
+    remaining variables to the meta argument (in a list).*
+
+```{r}
+corpus <- corpus(data, text_field = "message", meta = list("party", "screen_name"), docid="doc_id")
+```
+
+ii. *Tokenize your corpus using the tokens() function. This splits each
+    document into a vector of so-called tokens. Make the following
+    specifications (which will remove punctuation, numbers,
+    non-alpha-numeric symbols, and urls): • remove_punct = TRUE •
+    remove_numbers = TRUE • remove_symbols = TRUE • remove_url = TRUE •
+    padding = FALSE*
+
+```{r}
+tokens <- tokens(corpus, 
+                 remove_punct = TRUE,
+                 remove_numbers = TRUE,
+                 remove_symbols = TRUE,
+                 remove_url = TRUE,
+                 padding = FALSE) %>% 
+        tokens_tolower()
+```
+
+iii. *Exclude english stopwords using the tokens_remove() function.
+     Setting x to the output from the previous step, setting the second
+     argument to stopwords("en"), and setting padding=FALSE.*
+
+```{r}
+tokens <- tokens_remove(tokens,
+                        stopwords("en"),
+                        padding = F)
+```
+
+iv. *To get a feel of how your data looks like now, print the first 3
+    texts by simple subsetting of the output from iii.*
+
+```{r}
+tokens[1:3]
+```
+
+v.  *As mentioned in the lecture, topic models expect the data to be in
+    a document-term-matrix form. Transform your tokens into a
+    document-term-matrix using the quanteda's function dfm().*
+
+```{r}
+dtm <- dfm(tokens)
+```
+
+vi. *As a last pre-processing step, we want to exclude (a) words which
+    are very infrequent (below 5). and (b) documents which have very few
+    words (below 10).*
+
+```{r}
+dtm <- dfm_trim(dtm, min_termfreq = 5)
+rowsums <- rowSums(dtm)
+keep_ids <- which(rowsums>=10)
+dtm <- dtm[keep_ids,] 
+```
+
+```{r}
+dim(dtm)
+```
+
+3.  **Now we are ready to do some topic modeling! To do so, we will use
+    the topicmodels package, and the function LDA(). Set x to your
+    document-term-matrix and specify method="Gibbs" (note: Gibbs is the
+    name of a particular estimation procedure; see the Appendix of the
+    lecture for more details). Set the number of iterations to 1000, and
+    specify a seed number to ensure replicability (hint: to specify
+    iterations and seed number, use the control argument). Finally, set
+    the number of topics, K=50. With these settings specified, start the
+    estimation. This could take a minute or two.**
+
+```{r}
+mylda <- LDA(x = dtm,
+             k = 50, 
+             method="Gibbs",
+             control=list(iter = 1000, 
+                          seed = 1, 
+                          verbose = 100))
+```
+
+4.  **Once the estimation is finished, use the get_terms() function to
+    extract the 15 words with the highest probability in each topic. In
+    a real research setting, we would carefully examine each of the
+    topics. Here, I only ask you to briefly skim them, and then focus on
+    5--10 that:**
+
+<!-- -->
+
+(i) *you think are interesting,*
+(ii) *has a clear theme, and*
+(iii) *are clearly distinct from the other topics. Provide a label to
+      each of those based on the top 15 words. Complementing your label,
+      please also provide a bar chart displaying on the y-axis the top
+      15 words, and on the x-axis their topic probabilities. Hint: you
+      can retrieve each topic's distribution over words using
+      topicmodels's function "posterior"'. Lastly, please also report a
+      general assessment---based on your skim---about the general
+      quality of the topics; do most of them appear clearly themed and
+      distinct, or are there a lot of "junk" topics?*
+
+```{r}
+
+get_terms(mylda,15)
+get_terms(mylda, 15)[,c(4,6,7,10,33,46)] # Only first 15 topics
+
+```
+
+```{r}
+mylda_posterior <- topicmodels::posterior(object = mylda)
+topic_distr_over_words <- mylda_posterior$terms
+topic_distr_over_words_dt <- data.table(topic=1:50,
+                                        topic_distr_over_words)
+topic_distr_over_words_dt <- melt.data.table(topic_distr_over_words_dt,
+id.vars = 'topic') # data.table way of extracting top 10 rows by group
+topic_distr_over_words_dt <- topic_distr_over_words_dt[order(value,decreasing = T)]
+top15per_topic <- topic_distr_over_words_dt[,head(.SD,15),by='topic']
+# Create topic labels
+top15per_topic[topic==4, label := 'Gender Equality/Civil Rights']
+top15per_topic[topic==6, label := 'National security']
+top15per_topic[topic==10, label := 'Foreign-interference domestic politics']
+top15per_topic[topic==33, label := 'Opioid crisis']
+top15per_topic[topic==46, label := 'Environmental/Climate Policy']
+
+library(tidytext) # To re-order x-axis by value within group
+ggplot(top15per_topic[topic %in%  c(4,6,10,33,46)],aes(y=reorder_within(variable,value,label),x=value)) +
+  geom_bar(stat = 'identity', position = 'dodge') +
+  scale_y_reordered() +
+  facet_wrap(~label,scales = 'free')
+
+```
+
+Overall, these six topics were pretty straightforward to interpret. I
+would say that most topics were pretty clear and interpretable, although
+some were what we would call "junk" topics, and these were harder to
+interpret.
+
+5.  **Out of the 5--10 topics that you labeled, select three which you
+    think are particularly interesting. For these three, identify the
+    three documents which have the highest proportion assigned of this
+    topic (hint 1: use topicmodels's posterior() to extract documents'
+    distribution over topics \| hint 2: to identify the document ids
+    which correspond to each row of what you extract from posterior(),
+    you can use
+    [ldaobject\@documents](mailto:ldaobject@documents){.email}. See help
+    file for more details.), and do a qualitative inspection (= 3×3
+    documents to read). Does your readings corroborate your labels? Are
+    they about what you expected?**
+
+```{r}
+doc_topic_proportions <- mylda_posterior$topics
+doc_topic_proportions_dt <- data.table(doc_id=mylda@documents, doc_topic_proportions)
+
+setnames(x = doc_topic_proportions_dt,
+         old = 2:ncol(doc_topic_proportions_dt),
+         new =  paste0('Topic',1:50))
+# Select document ids to inspect for topic 6
+t10 <- doc_topic_proportions_dt[order(Topic10,decreasing = T)][,.(doc_id,Topic10)][1:5,]
+t33 <- doc_topic_proportions_dt[order(Topic33,decreasing = T)][,.(doc_id,Topic33)][1:5,]
+t46 <- doc_topic_proportions_dt[order(Topic46,decreasing = T)][,.(doc_id,Topic46)][1:5,]
+# Print the corresponding fb posts
+print(data[doc_id==t10$doc_id[1]]$message)
+print(data[doc_id==t33$doc_id[1]]$message)
+print(data[doc_id==t46$doc_id[2]]$message)
+
+
+for (i in 1:3){
+        print(data[doc_id==t10$doc_id[i]]$message)
+}
+
+for (i in 1:3){
+        print(data[doc_id==t33$doc_id[i]]$message)
+}
+for (i in 1:3){
+        print(data[doc_id==t46$doc_id[i]]$message)
+}
+
+```
+
+Looking at these documents, I would say that most of them seem to in
+line with the given label with the exception of "the opioid crisis"
+topic. This topic seems to be about health crisis in general (cancer,
+for instance) rather than a explicit opioid crisis topic. Further, with
+regards to the foreign interference topic, it seems to be more about
+Trumps relationship with Russia, rather than a more general "foreign
+interference" topic.
+
+6.  **Now, estimate a topic model---as in #3---but with K=3 instead.
+    Extract the top 15 words from each topic, (try to) label each, and
+    then make an assessment of the overall quality of them. To further
+    explore the quality of this topic model, reconsider the documents
+    you read in #5: extract the distribution over topics for these
+    documents (from your new K=3 model). How well does this topic model
+    capture the theme of these documents? Based on your analysis, which
+    of the two K's do you prefer? Motivate.**
+
+```{r}
+mylda2 <- LDA(x = dtm,
+             k = 3, 
+             method="Gibbs",
+             control=list(iter = 1000, 
+                          seed = 1, 
+                          verbose = 100))
+
+get_terms(mylda2, 15)
+
+mylda2_posterior <- topicmodels::posterior(object = mylda2)
+doc_topic_proportions2 <- mylda2_posterior$topics
+doc_topic_proportions2_dt <- data.table(doc_id=mylda2@documents,doc_topic_proportions2)
+
+setnames(x = doc_topic_proportions2_dt,
+         old = 2:ncol(doc_topic_proportions2_dt),
+         new =  paste0('Topic',1:3))
+doc_topic_proportions2_dt[doc_id==t10$doc_id[1]]
+doc_topic_proportions2_dt[doc_id==t33$doc_id[1]]
+doc_topic_proportions2_dt[doc_id==t46$doc_id[1]]
+```
+
+Using K = 3, makes the topics more coherent, in the sense that it blends
+together the different topics that we observed in the first model. This
+is easy to note by looking at topic 1 and 2. Topic 1 is a mix of Trump &
+military - related terms. Topic 2 is a mix of health-care/tax/bill -
+related terms. So the consequence is that it is much harder to label
+these topics compared to the first model. Considering the topic
+proportions of the documents that was inspected previously, we note that
+this is certainly the case. The first document (Foreign interference)
+has Topic 1 as its primary topic, which makes sense because it contains
+both military- and Trump-related terms. Document 2 (Opioid) has Topic 2
+as its primary topic, which also makes sense considering its about
+health-care related terms. Document 3 (climate) is almost evenly spread
+out across all topics.
+
+7.  **Continuing with the topic model you concluded the most
+    appropriate, perform the following sets of analyses:**
+
+<!-- -->
+
+i.  *Compute the prevalence of each topic, across all documents. Report
+    which is the most prevalent topic, overall, and then report---in the
+    form of a single plot; e.g., a bar chart---the prevalence of the
+    topics you labeled.*
+ii. *Compare the prevalence on your labeled topics between democrats and
+    republicans. You can for example fit a fractional regression model
+    using glm(family="quasibinomial") 4 or using t-tests of difference
+    in means. Interpret.*
+
+```{r}
+topic_means <- colMeans(doc_topic_proportions_dt[,c(2:51)])
+topic_means <- topic_means[order(topic_means,decreasing = T)]
+topic_means_dt <- data.table(topic=names(topic_means),
+                             mean=topic_means)
+ggplot(topic_means_dt,aes(x=mean,y=reorder(topic,mean))) +
+  geom_point(size=3)
+```
+
+```{r}
+data[,doc_id := as.character(doc_id)] 
+
+doc_topic_proportions_dt <- merge(x=doc_topic_proportions_dt,
+                                  y=data[,.(doc_id,party)],by='doc_id')
+
+hc_glm <- glm(Topic46 ~ party,
+              data=doc_topic_proportions_dt,family="quasibinomial") 
+# Using the fractional logit approach,
+# (combining sandwich and lmtest pkgs # to get robust standard errors) library(sandwich)
+library(lmtest)
+library(sandwich)
+coeftest(hc_glm,
+        vcov = vcovHC(hc_glm, type="HC1"))
+
+1 - exp(-0.090163)
+```
+
+Examining the climite crisis topic I would suspect that republicans talk
+about this less compared to democrats. Looking at the coefficient we
+note that such assumptions certainly appears to be the case. Republicans
+talk about climate related policies approximately 9 % less compared to
+democrats.
+
+**Part 2**
+
+1.  **Because word embeddings are not negatively affected by stop words
+    or other highly frequent terms, your first task is to re-import the
+    fb-congress-data.csv file, and re-process the data; perform- ing
+    step i--ii in task #2, but skipping #3. Here, we also do not want to
+    transform our documents into a document-term matrix. Instead, after
+    having tokenized and cleaned the documents, paste each back into a
+    single string per document. Hint: for this, you could for example
+    write: sapply(mytokens,function(x)paste(x,collapse = " ")). As a
+    last pre-processing step, transform all your text into lowercase
+    (hint: you can use the function tolower() for this).**
+
+```{r}
+data <- fread("fb-congress-data3.csv",encoding = 'UTF-8')
+corpus <- corpus(data, text_field = "message", meta = list("party", "screen_name"), docid="doc_id")
+tokens <- tokens(corpus, 
+                 remove_punct = TRUE,
+                 remove_numbers = TRUE,
+                 remove_symbols = TRUE,
+                 remove_url = TRUE,
+                 padding = FALSE) %>% 
+        tokens_tolower()
+txt <- sapply(tokens,function(x)paste(x,collapse = ' '))
+txt <- tolower(txt)
+
+```
+
+2.  **Now we are set to fit word embeddings! To begin, let us fit one
+    word embedding model to all documents---not separating posts by
+    democrats and republicans. Use word2vec's word2vec() function to fit
+    a cbow model (type="cbow") using 15 negative samples per real
+    context/observation (negative=15), and setting dim=50, the number of
+    dimensions of the word vetors/embeddings. This will take a minute or
+    two.**
+
+```{r}
+set.seed(123456789)
+system.time(w2v <- word2vec(x = txt,          # Your data 
+                            type = "cbow",    # Model type (the one we talked about in lecture)
+                            window = 5,       # Context defined in terms of +-5 words.
+                            dim = 50,         # Dimensionality of embeddings
+                            iter = 50,        # Estimation iterations (higher means more time...)
+                            hs = FALSE,       # Setting to FALSE here --> "negative sampling procedure"
+                            negative = 15))   # Number of negative samples
+
+```
+
+3.  **When the estimation in #2 is finished, identify the 10 nearest
+    terms to 3 focal (sufficiently frequent) words of your
+    choice/interest. Hint: to retrieve the closest words in
+    embedding/word vector space, you may use the following code:
+    predict(w2v,c("word2","word2","word3"),type="nearest",top_n = 10),
+    wherewv2 is the object storing the fitted model of the word2vec
+    function. Does the results you find makes sense? Why/why not?**
+
+```{r}
+predict(w2v, c('climate',"russia","opioid"), type = "nearest", top_n = 10)
+```
+
+I would say that all of the closest words makes sense. For climate, it
+seems to be related to posts emphasizing the urgency to do something
+about the climate. For Russia there's definitely an overemphasis on
+interference and meddling with regards to Russia (makes sense given the
+accusations related to trumps election). For opioid, the closests words
+are related to humanitarian crisis and addiction.
+
+4.  **Perhaps the most popular usage of word embeddings in the social
+    sciences---at least thus far---is to (a) create substantive
+    dimensions (e.g., "gender", "sentiment",. . . ) using antonym pairs
+    and (b) projecting other words onto this dimension. Let us try to
+    replicate the popular finding that certain occupations are gender
+    biased. To do so, perform the following steps:**
+
+<!-- -->
+
+i.  *Import the two text files male.txt and female.txt. They contain a
+    set of word-pairs which have a gender property to them.*
+ii. *Extract the whole embedding matrix: embedding \<- as.matrix(w2v).*
+iii. *Identify the rows in the embedding matrix which correspond to the
+     words in the male and female document, extract their vectors into
+     two separate matrices (male, female) and calculate the column
+     averages.*
+iv. *Compute the difference between the two vectors from iii. This is
+    the "gender" dimension. Calcu- late the difference from both sides
+    to faciliate straighforward calculation of male/female associations
+    in the next step (male-oriented = male - female, female-oriented =
+    female - male).*
+v.  *Use word2vec's function word2vec_similarity() to calculate the
+    similarity to the "gender dimension(s)" for four occupation names:
+    "lawyer", "engineer", "nurse", "homemaker". What do you find?*
+
+```{r}
+male <- fread("male.txt",header = F)
+female <- fread("female.txt",header=F)
+
+embedding <- as.matrix(w2v)
+
+male_vectors <- embedding[which(rownames(embedding) %in% male$V1),]
+female_vectors <- embedding[which(rownames(embedding) %in% female$V1),]
+
+# 2) Compute the average across each and keep matrix format
+male_vectors <- as.matrix(apply(male_vectors,2,mean))
+female_vectors <- as.matrix(apply(female_vectors,2,mean))
+
+# 3) Transform to get 1 x K
+male_vectors <- t(male_vectors)
+female_vectors <- t(female_vectors)
+
+# 4) Compute the difference to get a gender dimension
+male_female_dimension <- male_vectors - female_vectors
+female_male_dimension <- female_vectors - male_vectors
+
+occupations <- c("lawyer","engineer","nurse","homemaker","police")
+
+male_assoc_terms <- word2vec::word2vec_similarity(x = male_female_dimension, 
+                                                 y = embedding[which(rownames(embedding) %in% occupations),], top_n = 10)
+?word2vec_similarity
+female_assoc_terms <- word2vec::word2vec_similarity(x = female_male_dimension, 
+                                                 y = embedding[which(rownames(embedding) %in% occupations),],
+                                                 top_n = 10)
+male_assoc_terms
+female_assoc_terms
+```
+
+The results show that "engineer" and police are being more similar to
+"male" than "female" dimension. But, in general i would say the results
+are quite hard to interpret and unclear.
+
+5.  **Now two based on party affiliation. Then, repeat 2--4, but now
+    separately for republicans and democrats. For #3, select words which
+    you expect might be used differently between the two political camps
+    (but we shall turn to comparison between democrats and republicans.
+    Split the data from step #1 into still are frequently used by both).
+    For #4, you shall instead of gender focus now on sentiment; creating
+    a "positive"---"negative" dimension. And here we are not concerned
+    with occupations. Instead, you shall compute the 50 most similar to
+    the negative side (negative - positive) for both republicans and
+    democrats. Report what you find. Are there substantive differences
+    in the composition of words? Additionally, you should pick a set of
+    words which you hypothesize may be used in a more/less positive
+    light between the parties; are they? Note: absolute differences
+    cannot be compared across models; instead shall report relative
+    differences (e.g., in ranking).**
+
+```{r}
+dem <- data %>% 
+        filter(party == "Democrat")
+
+rep <- data %>% 
+        filter(party == "Republican")
+```
+
+```{r}
+dem_corpus <- corpus(dem, text_field = "message", meta = list("party", "screen_name"), docid="doc_id")
+rep_corpus <- corpus(rep, text_field = "message", meta = list("party", "screen_name"), docid="doc_id")
+
+dem_tokens <- tokens(dem_corpus, 
+                 remove_punct = TRUE,
+                 remove_numbers = TRUE,
+                 remove_symbols = TRUE,
+                 remove_url = TRUE,
+                 padding = FALSE) %>% 
+        tokens_tolower()
+
+rep_tokens <- tokens(rep_corpus, 
+                 remove_punct = TRUE,
+                 remove_numbers = TRUE,
+                 remove_symbols = TRUE,
+                 remove_url = TRUE,
+                 padding = FALSE) %>% 
+        tokens_tolower()
+dem_txt <- sapply(dem_tokens,function(x)paste(x,collapse = ' '))
+dem_txt <- tolower(dem_txt)
+
+rep_txt <- sapply(rep_tokens,function(x)paste(x,collapse = ' '))
+rep_txt <- tolower(rep_txt)
+```
+
+```{r}
+set.seed(123456789)
+system.time(w2v_dem <- word2vec(x = dem_txt,          # Your data 
+                            type = "cbow",    # Model type (the one we talked about in lecture)
+                            window = 5,       # Context defined in terms of +-5 words.
+                            dim = 50,         # Dimensionality of embeddings
+                            iter = 50,        # Estimation iterations (higher means more time...)
+                            hs = FALSE,       # Setting to FALSE here --> "negative sampling procedure"
+                            negative = 15))   # Number of negative samples
+
+
+system.time(w2v_rep <- word2vec(x = rep_txt,          # Your data 
+                            type = "cbow",    # Model type (the one we talked about in lecture)
+                            window = 5,       # Context defined in terms of +-5 words.
+                            dim = 50,         # Dimensionality of embeddings
+                            iter = 50,        # Estimation iterations (higher means more time...)
+                            hs = FALSE,       # Setting to FALSE here --> "negative sampling procedure"
+                            negative = 15))   # Number of negative samples
+```
+
+```{r}
+R_dtm <- dfm(x = rep_tokens)
+R_freq <- colSums(R_dtm)
+R_freq <- data.table(word=names(R_freq),Rfreq=R_freq)
+D_dtm <- dfm(x = dem_tokens)
+D_freq <- colSums(D_dtm)
+D_freq <- data.table(word=names(D_freq),Dfreq=D_freq)
+RD_freq <- merge(x=R_freq,y=D_freq,by='word')
+RD_freq[,totfreq := Rfreq + Dfreq]
+RD_freq <- RD_freq[order(Rfreq,decreasing = T)]
+RD_freq[250:300,]
+predict(w2v_dem, c('military',"healthcare","energy"), type = "nearest", top_n = 10)
+predict(w2v_rep,  c('military',"healthcare","energy"), type = "nearest", top_n = 10)
+
+```
+
+There are some meaningful differences between the republicans and the
+democrats in terms of the most similar words for "care", "reform", and
+"military". In the case of energy, the democrats are talking more in
+terms of renewable sources and what could be interpreted as "green
+energy source", the republicans on the other hand are talking about it
+in terms of cost. In terms of healthcare it is very clear that the
+democrats sees public healthcare as something beneficial (benefits)
+whereas the republicans focuses on costs (skyrocketing) For the other
+two they are more less the same. For military, the democrats are talking
+more in terms of their sacrifices and honoring the fallen ones, while
+republicans talk about the military more in terms of foreign relations
+and geopolitical concerns, they seem to be signaling the"readiness",
+"strenght", and "involvement" of the US military.
+
+```{r}
+pos_terms <- fread('positive.txt',header = F)
+neg_terms <- fread('negative.txt',header = F)
+check_words <- c("obamacare")
+# Republicans
+# ===========
+R_embedding <- as.matrix(w2v_rep)
+# (iii)
+R_pos_vectors <- R_embedding[which(rownames(R_embedding) %in% pos_terms$V1),] 
+R_neg_vectors <- R_embedding[which(rownames(R_embedding) %in% neg_terms$V1),] 
+R_pos_vector <- as.matrix(apply(R_pos_vectors,2,mean))
+R_neg_vector <- as.matrix(apply(R_neg_vectors,2,mean))
+# (iv)
+R_pos_vector <- t(R_pos_vector)
+R_neg_vector <- t(R_neg_vector)
+R_neg_pos_dimension <- R_neg_vector - R_pos_vector
+# (v) 50 most negative
+R_neg.assoc_terms <- word2vec_similarity(x = R_neg_pos_dimension,
+                y = R_embedding[-which(rownames(R_embedding) %in% neg_terms$V1),],top_n = 50)
+R_pos.assoc_terms <- word2vec_similarity(x = R_neg_pos_dimension,
+                y = R_embedding[-which(rownames(R_embedding) %in% neg_terms$V1),],top_n = 50)
+
+# Democrats
+# ===========
+D_embedding <- as.matrix(w2v_dem)
+# (iii)
+D_pos_vectors <- D_embedding[which(rownames(D_embedding) %in% pos_terms$V1),] 
+D_neg_vectors <- D_embedding[which(rownames(D_embedding) %in% neg_terms$V1),] 
+D_pos_vector <- as.matrix(apply(D_pos_vectors,2,mean))
+D_neg_vector <- as.matrix(apply(D_neg_vectors,2,mean))
+
+D_pos_vector <- t(D_pos_vector)
+D_neg_vector <- t(D_neg_vector)
+D_neg_pos_dimension <- D_neg_vector - D_pos_vector
+# (v) 50 most negative
+D_neg.assoc_terms <- word2vec_similarity(x = D_neg_pos_dimension,
+                y = D_embedding[-which(rownames(D_embedding) %in% neg_terms$V1),],top_n = 50)
+D_pos.assoc_terms <- word2vec_similarity(x = D_neg_pos_dimension,
+                y = D_embedding[-which(rownames(D_embedding) %in% pos_terms$V1),],top_n = 50)
+
+R_neg.assoc_terms
+D_neg.assoc_terms
+
+D_pos.assoc_terms
+R_pos.assoc_terms
+```
